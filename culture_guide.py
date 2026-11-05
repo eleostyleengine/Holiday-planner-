@@ -22,6 +22,7 @@ class GuideError(Exception):
 
 class CultureGuideGenerator:
     API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
     def __init__(self, api_key=None, model=None, timeout=30):
         # Key comes from the .env file (or whatever is passed in)
@@ -36,13 +37,64 @@ class CultureGuideGenerator:
     # ------------------------------------------------------------------
     # Talking to Gemini
     # ------------------------------------------------------------------
+    def _post(self, model, body):
+        """Send one request to one model. Network problems become GuideErrors."""
+        url = self.API_URL.format(model=model)
+        headers = {"x-goog-api-key": self.api_key, "Content-Type": "application/json"}
+        try:
+            return requests.post(url, headers=headers, json=body, timeout=self.timeout)
+        except requests.exceptions.Timeout:
+            raise GuideError("Gemini took too long to answer. Please try again.")
+        except requests.exceptions.ConnectionError:
+            raise GuideError("Could not reach Gemini. Check your internet connection.")
+        except requests.exceptions.RequestException as error:
+            raise GuideError(f"The request to Gemini failed: {error}")
+
+    def _find_other_models(self):
+        """
+        Google retires old models and new keys can't always use them (that
+        gives a 404). So ask Google which models exist and return a few
+        "flash" text models to try instead, newest first.
+        """
+        try:
+            response = requests.get(
+                self.MODELS_URL,
+                headers={"x-goog-api-key": self.api_key},
+                params={"pageSize": 200},
+                timeout=self.timeout,
+            )
+            items = response.json().get("models", [])
+        except (requests.exceptions.RequestException, ValueError, AttributeError):
+            return []
+
+        # Names containing these words are for images, voice, etc., not text
+        skip_words = ("image", "tts", "audio", "live", "embedding", "vision",
+                      "robotics", "computer", "imagen", "veo", "aqa")
+        names = []
+        for item in items:
+            name = str(item.get("name", "")).replace("models/", "")
+            can_generate = "generateContent" in item.get("supportedGenerationMethods", [])
+            if can_generate and "flash" in name and name != self.model \
+                    and not any(word in name for word in skip_words):
+                names.append(name)
+
+        names.sort(reverse=True)  # highest version number first
+        # Stable models go before preview/experimental ones (sort keeps the order inside each group)
+        names.sort(key=lambda n: ("preview" in n or "exp" in n))
+        return names[:4]
+
+    @staticmethod
+    def _google_message(response):
+        """Pull Google's own explanation out of an error response, if there is one."""
+        try:
+            return str(response.json()["error"]["message"])[:200]
+        except (ValueError, KeyError, TypeError):
+            return ""
+
     def _ask_gemini(self, prompt, as_json=False):
         """Send a prompt to Gemini and return the text it answers with."""
         if not self.has_key():
             raise GuideError("No Gemini API key found. Add GEMINI_API_KEY to your .env file.")
-
-        url = self.API_URL.format(model=self.model)
-        headers = {"x-goog-api-key": self.api_key, "Content-Type": "application/json"}
 
         body = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -52,21 +104,27 @@ class CultureGuideGenerator:
             # Asks Gemini to reply with JSON only, which is easier to read in code
             body["generationConfig"]["responseMimeType"] = "application/json"
 
-        try:
-            response = requests.post(url, headers=headers, json=body, timeout=self.timeout)
-        except requests.exceptions.Timeout:
-            raise GuideError("Gemini took too long to answer. Please try again.")
-        except requests.exceptions.ConnectionError:
-            raise GuideError("Could not reach Gemini. Check your internet connection.")
-        except requests.exceptions.RequestException as error:
-            raise GuideError(f"The request to Gemini failed: {error}")
+        response = self._post(self.model, body)
+
+        # 404 means this model name isn't available for this key, so try others
+        if response.status_code == 404:
+            for other_model in self._find_other_models():
+                response = self._post(other_model, body)
+                if response.status_code != 404:
+                    self.model = other_model   # remember the one that worked
+                    break
 
         if response.status_code in (400, 403):
-            raise GuideError("Gemini rejected the request. Your API key may be wrong or not allowed.")
+            raise GuideError("Gemini rejected the request. Your API key may be wrong or not allowed. "
+                             + self._google_message(response))
         if response.status_code == 429:
             raise GuideError("Too many requests to Gemini right now. Wait a minute and try again.")
+        if response.status_code == 404:
+            raise GuideError("Gemini could not find a model this key can use "
+                             f"(tried {self.model}). " + self._google_message(response))
         if not response.ok:
-            raise GuideError(f"Gemini returned an error (status {response.status_code}).")
+            raise GuideError(f"Gemini returned an error (status {response.status_code}). "
+                             + self._google_message(response))
 
         # The answer sits deep inside the JSON, so dig for it carefully.
         try:
