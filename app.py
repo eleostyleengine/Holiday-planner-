@@ -70,7 +70,7 @@ def load_country_names():
 # Small helper functions for the screen
 # ----------------------------------------------------------------------
 def holiday_rows(holidays):
-    """Turn Holiday objects into plain rows for st.dataframe."""
+    """Turn Holiday objects into plain rows for show_table."""
     return [
         {
             "Date": h.date.strftime("%a, %d %b %Y"),
@@ -108,6 +108,22 @@ def month_calendar(year, month, holidays):
         lines.append("| " + " | ".join(cells) + " |")
 
     return "\n".join(lines), in_month
+
+
+def show_table(rows):
+    """
+    Draw a list of dictionaries as a plain table. I use this instead of
+    st.dataframe because dataframes can show up blank when they sit inside
+    a tab; a markdown table always displays.
+    """
+    if not rows:
+        return
+    headers = list(rows[0].keys())
+    lines = ["| " + " | ".join(headers) + " |", "|" + "---|" * len(headers)]
+    for row in rows:
+        cells = [str(row[h]).replace("|", "/") for h in headers]
+        lines.append("| " + " | ".join(cells) + " |")
+    st.markdown("\n".join(lines))
 
 
 def next_holiday(holidays):
@@ -233,7 +249,7 @@ with tab_holidays:
 
         # --- full list ---
         st.markdown("#### All holidays")
-        st.dataframe(holiday_rows(holidays), hide_index=True)
+        show_table(holiday_rows(holidays))
 
         # --- favourites ---
         if st.button(f"Add {current['name']} to favourites"):
@@ -333,20 +349,18 @@ with tab_compare:
 
         st.markdown("#### Shared celebrations")
         if data["shared"]:
-            st.dataframe(
+            show_table(
                 [{"Holiday": i["name"], name_a: i["date_a"], name_b: i["date_b"],
-                  "Same date": "Yes" if i["same_date"] else "No"} for i in data["shared"]],
-                hide_index=True,
+                  "Same date": "Yes" if i["same_date"] else "No"} for i in data["shared"]]
             )
         else:
             st.write("These two countries have no holidays with the same name.")
 
         st.markdown("#### Different holidays on the same date")
         if data["overlapping"]:
-            st.dataframe(
+            show_table(
                 [{"Date": i["date"], name_a: i["holiday_a"], name_b: i["holiday_b"]}
-                 for i in data["overlapping"]],
-                hide_index=True,
+                 for i in data["overlapping"]]
             )
         else:
             st.write("No overlapping dates.")
