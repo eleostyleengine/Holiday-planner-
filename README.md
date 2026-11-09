@@ -1,6 +1,9 @@
 # Public Holiday & Cultural Awareness Planner
 
 Python Advanced Cohort 39, Group 6.
+LIVE APP:
+https://holidayplannerg6.streamlit.app/
+
 
 A Streamlit app where you pick a country and a year, see its public
 holidays in a calendar, and use Gemini AI to learn what each holiday
